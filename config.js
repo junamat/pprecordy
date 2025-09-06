@@ -15,7 +15,7 @@ const question = (query) => {
 };
 const askCountry = async () => {
     let answer = await question('Do you want to input a country? (y/n): ');
-    if(answer != '-1') config.country = answer == 'y' ? 1 : 0;
+    if(answer != '-1') config.country = answer.toLowerCase() == 'y' ? 1 : 0;
     if(config.country){
         answer = await question('What country code? (US, ES, JP, etc.): ');
         if(answer != '-1') config.country = answer;
@@ -45,7 +45,7 @@ const askGamemode = async () => {
 
 const askStartDate = async () => {
     let answer = await question("Do you want to input a start date? (if you don't, you'll be asked for the amount of time) (y/n): ");
-    if(answer != '-1') config.time.absolute_s = answer == 'y' ? 1 : 0;
+    if(answer != '-1') config.time.absolute_s = answer.toLowerCase() == 'y' ? 1 : 0;
     if(config.time.absolute_s){
         answer = await question('What is the start date? (YYYY-MM-DD): ');
         if(answer != '-1') config.time.start = Date.parse(answer);
@@ -58,7 +58,7 @@ const askStartDate = async () => {
 
 const askFinishDate = async () => {
     let answer = await question("Do you want to input a finish date (if you don't, the program will check using the time and date you ran it as the finishing time) (y/n): ");
-    if(answer !== '-1') config.time.absolute_f = answer == 'y' ? 1 : 0;
+    if(answer !== '-1') config.time.absolute_f = answer.toLowerCase() == 'y' ? 1 : 0;
     if(config.time.absolute_f){
         answer = await question('What is the finish date? (YYYY-MM-DD): ');
         if(answer != '-1') config.time.finish = Date.parse(answer);

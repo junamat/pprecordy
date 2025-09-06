@@ -27,7 +27,7 @@ const RecentTopPlays = async (userIds) => {
         }
       )
     )
-    //console.log("User " + (i + 1) + " out of " + userIds.length + " done")
+    console.log("User " + (i + 1) + " out of " + userIds.length + " done")
   }
   return Promise.resolve(RecentTopPlays);
 }
