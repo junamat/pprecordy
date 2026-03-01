@@ -1,16 +1,24 @@
 {
-	"onboarded": false,
-	"gamemode": "",
-	"country": 0,
-	"pages": "",
-	"time": {
-		"absolute_s": 0,
-		"absolute_f": 0,
-		"start": 0,
-		"finish": 1670516928593
-	},
-	"api_key": {
-		"client": "",
-		"secret": ""
-	}
+    "onboarded": false,
+    "gamemode": "osu",                    
+    "country": 0,                          
+    "pages": "",                         
+    "time": {
+        "absolute_s": 0,                  
+        "absolute_f": 0,                  
+        "start": 0,                       
+        "finish": 1670516928593           
+    },
+    "api_key": {
+        "client": "",
+        "secret": ""
+    },
+    "rateLimit": {                        
+        "rpm": 60,                        
+        "burst": 200                       
+    },
+    "logging": {                          
+        "enabled": false,
+        "file": "pprecordy.log"
+    }
 }

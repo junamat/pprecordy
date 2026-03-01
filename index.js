@@ -1,5 +1,20 @@
 const { v2, auth } = require('osu-api-extended')
+const fs = require('fs');
 const config = require('./config.json');
+
+// simple logger that prints to console and optionally to file
+const log = (message, level = 'log') => {
+  const text = `[${new Date().toISOString()}] ${message}`;
+  console[level](text);
+  if (config.logging && config.logging.enabled && config.logging.file) {
+    try {
+      fs.appendFileSync(config.logging.file, text + '\n');
+    } catch (e) {
+      console.error(`failed to write log to ${config.logging.file}:`, e);
+    }
+  }
+};
+
 const login = async () => {
   await auth.login(config.api_key.client, config.api_key.secret, ['public']);
 }
@@ -15,21 +30,122 @@ const GetRanking = async () => {
   return Promise.resolve(userIds)
 }
 
+// token-bucket rate limiter factory
+const createRateLimiter = (rpm = 60, burst = rpm) => {
+  const ratePerMs = rpm / 60000; // tokens per ms
+  // start with burst capacity so we don't immediately block, but default
+  // burst is equal to rpm to avoid huge initial floods.
+  let tokens = burst;
+  let last = Date.now();
+
+  const removeToken = async () => {
+    while (true) {
+      const now = Date.now();
+      const elapsed = now - last;
+      if (elapsed > 0) {
+        tokens = Math.min(burst, tokens + elapsed * ratePerMs);
+        last = now;
+      }
+      if (tokens >= 1) {
+        tokens -= 1;
+        return;
+      }
+      // ms until enough tokens accumulate for one request
+      const msToNext = Math.ceil((1 - tokens) / ratePerMs);
+      await new Promise((r) => setTimeout(r, Math.max(1, msToNext)));
+    }
+  };
+
+  const drain = () => {
+    tokens = 0;
+  };
+
+  return { removeToken, drain };
+};
+
 const RecentTopPlays = async (userIds) => {
-  const RecentTopPlays = []
-  for (let i = 0; i < userIds.length; i++) {
-    const recentPlays = await v2.scores.user.category(userIds[i], 'best', { mode: config.gamemode, limit: 100 });
-    RecentTopPlays.push(
-      recentPlays.filter(
-        (score) => {
-          const scoreCreationTimestamp = Date.parse(score.created_at);
-          return scoreCreationTimestamp >= config.time.start && (!config.time.absolute_f || scoreCreationTimestamp <= config.time.finish)
+  // allow overriding via config.rateLimit { rpm, burst }
+  const rpm = (config.rateLimit && config.rateLimit.rpm) || 300;
+  const burst = (config.rateLimit && config.rateLimit.burst) || 200;
+  const limiter = createRateLimiter(rpm, burst);
+
+  // helper to request with retries/backoff
+  const fetchWithRetry = async (userId, idx, attempts = 3) => {
+    let lastError;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+          await limiter.removeToken();
+        const res = await v2.scores.user.category(userId, 'best', { mode: config.gamemode, limit: 100 });
+        // some responses come back as HTML string when rate limited rather than throwing
+        if (typeof res === 'string' && res.includes('429 Too Many Requests')) {
+          const err = new Error('HTML 429 response');
+          err.status = 429;
+          throw err;
         }
-      )
-    )
-    console.log("User " + (i + 1) + " out of " + userIds.length + " done")
-  }
-  return Promise.resolve(RecentTopPlays);
+        return res;
+      } catch (err) {
+        lastError = err;
+        const msg = err && err.message ? err.message : '';
+        const status429 = err && (err.status === 429 || msg.includes('429'));
+        if (status429) {
+          // simple backoff notification
+          log(`Backed off due to 429 (user ${userId} idx ${idx})`, 'warn');
+          // clear tokens and wait 30s
+          if (typeof limiter.drain === 'function') limiter.drain();
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+        if (attempt < attempts) {
+          const backoff = 1000 * Math.pow(2, attempt - 1);
+          log(`request for user ${userId} (index ${idx}) failed (attempt ${attempt}), retrying in ${backoff}ms`, 'warn');
+          await new Promise((r) => setTimeout(r, backoff));
+          continue;
+        }
+      }
+    }
+    throw lastError;
+  };
+
+  let completed = 0; // track how many requests have finished
+  const requests = userIds.map((userId, i) => (async () => {
+    try {
+      const recentPlays = await fetchWithRetry(userId, i+1);
+      let playsArray = [];
+      if (Array.isArray(recentPlays)) {
+        playsArray = recentPlays;
+      } else if (recentPlays && Array.isArray(recentPlays.scores)) {
+        playsArray = recentPlays.scores;
+      } else if (recentPlays && Array.isArray(recentPlays.data)) {
+        playsArray = recentPlays.data;
+      } else if (recentPlays && recentPlays.length === 0) {
+        playsArray = [];
+      } else {
+        if (typeof recentPlays === 'string' && recentPlays.includes('429 Too Many Requests')) {
+          log(`Backed off due to HTML 429 for user ${userId} (idx ${i+1})`, 'warn');
+        } else {
+          log(`Unexpected response shape for user ${userId}: ${JSON.stringify(recentPlays)}`, 'warn');
+        }
+        playsArray = [];
+      }
+
+      const filtered = playsArray.filter((score) => {
+        const scoreCreationTimestamp = Date.parse(score.created_at);
+        return scoreCreationTimestamp >= config.time.start &&
+          (!config.time.absolute_f || scoreCreationTimestamp <= config.time.finish);
+      });
+
+      completed += 1;
+      log(`completed ${completed}/${userIds.length} (index ${i+1}, user ${userId})`);
+      return filtered;
+    } catch (err) {
+      completed += 1;
+      log(`Error fetching plays for user ${userId} (index ${i+1}): ${err}`, 'error');
+      log(`completed ${completed}/${userIds.length} (index ${i+1}, user ${userId})`);
+      return [];
+    }
+  })());
+
+  const recentTopPlays = await Promise.all(requests);
+  return recentTopPlays;
 }
 
 //read out loud recent top plays
@@ -77,7 +193,7 @@ const exportcsv = async (RecentTopPlays) => {
   }
   csvWriter.writeRecords(records)
     .then(() => {
-      console.log('...Done')
+      log('...Done');
     })
 }
 
@@ -85,10 +201,10 @@ const main = async () => {
   if (!config.onboarded) { //read config.json parameters from the user
     require('./config.js')
   } else {
-    (config.time.finish ? "" : config.time.finish = Date.now())
-    await login()
-    const userIds = await GetRanking()
-    const topPlays = await RecentTopPlays(userIds)
+    (config.time.finish ? "" : config.time.finish = Date.now());
+    await login();
+    const userIds = await GetRanking();
+    const topPlays = await RecentTopPlays(userIds);
     exportcsv(topPlays)
   }
 }

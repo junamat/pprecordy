@@ -71,6 +71,22 @@ const askPages = async () => {
     if(answer !== '-1') config.pages = answer;
 };
 
+const askLogging = async () => {
+    let answer = await question('Would you like to log output to a file? (y/n): ');
+    if(answer !== '-1' && answer.toLowerCase() === 'y') {
+        config.logging = config.logging || {};
+        config.logging.enabled = true;
+        answer = await question('Log file path (default pprecordy.log): ');
+        if(answer !== '-1' && answer.trim() !== '') {
+            config.logging.file = answer.trim();
+        } else if(!config.logging.file) {
+            config.logging.file = 'pprecordy.log';
+        }
+    } else if(answer !== '-1') {
+        config.logging = { enabled: false };
+    }
+};
+
 const parseTime = (timeString) => {
     const value = parseInt(timeString);
     const unit = timeString[timeString.length - 1];
@@ -89,6 +105,7 @@ const questionArc = async () => {
     answer = await question('What is your client secret?: ');
     if(answer != '-1') config.api_key.secret = answer;
     await askCountry();
+    await askLogging();
     config.onboarded = true;
     writeFile('./config.json', JSON.stringify(config, null, "\t"), (err) => {
         if (err) throw err;
