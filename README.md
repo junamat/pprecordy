@@ -1,6 +1,6 @@
 ﻿# pprecordy
 
-A fast, async Node.js tool to fetch and export top playrecords from the osu! API rankings. Scrapes performance data from ranked players across configurable time windows and exports results to CSV.
+A fast, async Node.js tool to fetch and export topplay records from the osu! API rankings. Scrapes performance data from the higher ranked players across configurable time windows and countries and exports results to CSV.
 
 ## Features
 
@@ -143,3 +143,4 @@ Press `Ctrl+C` to stop.
 ## License
 
 This tool is licensed under the [MIT](LICENSE) license.
+
