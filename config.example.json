@@ -14,8 +14,9 @@
         "secret": ""
     },
     "rateLimit": {                        
-        "rpm": 60,                        
-        "burst": 200                       
+        "rpm": 1200,                      
+        "burst": 200,                     
+        "concurrent": 15                  
     },
     "logging": {                          
         "enabled": false,

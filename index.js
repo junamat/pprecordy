@@ -64,15 +64,49 @@ const createRateLimiter = (rpm = 60, burst = rpm) => {
 };
 
 const RecentTopPlays = async (userIds) => {
-  // allow overriding via config.rateLimit { rpm, burst }
-  const rpm = (config.rateLimit && config.rateLimit.rpm) || 300;
+  // allow overriding via config.rateLimit { rpm, burst, concurrent }
+  const rpm = (config.rateLimit && config.rateLimit.rpm) || 1200;
   const burst = (config.rateLimit && config.rateLimit.burst) || 200;
+  const concurrent = (config.rateLimit && config.rateLimit.concurrent) || 15; // max parallel in-flight requests
   const limiter = createRateLimiter(rpm, burst);
+
+  let interrupted = false;
+  let rejectAll;
+  const interruptPromise = new Promise((_, reject) => {
+    rejectAll = reject;
+  });
+
+  // semaphore to cap concurrent in-flight requests
+  let _available = concurrent;
+  const acquire = async () => {
+    while (_available <= 0 && !interrupted) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    if (interrupted) throw new Error('INTERRUPTED');
+    _available -= 1;
+  };
+  const release = () => {
+    _available = Math.min(_available + 1, concurrent);
+  };
+
+  // handle ctrl+c gracefully
+  const handleInterrupt = () => {
+    if (!interrupted) {
+      interrupted = true;
+      log(`User interrupted (Ctrl+C) – skipping remaining requests and proceeding to export`, 'warn');
+      if (typeof rejectAll === 'function') rejectAll(new Error('INTERRUPTED'));
+    }
+  };
+  process.on('SIGINT', handleInterrupt);
 
   // helper to request with retries/backoff
   const fetchWithRetry = async (userId, idx, attempts = 3) => {
     let lastError;
     for (let attempt = 1; attempt <= attempts; attempt++) {
+      if (interrupted) {
+        // quit early if user pressed ctrl+c
+        return [];
+      }
       try {
           await limiter.removeToken();
         const res = await v2.scores.user.category(userId, 'best', { mode: config.gamemode, limit: 100 });
@@ -88,11 +122,10 @@ const RecentTopPlays = async (userIds) => {
         const msg = err && err.message ? err.message : '';
         const status429 = err && (err.status === 429 || msg.includes('429'));
         if (status429) {
-          // simple backoff notification
+          // treat 429 as concurrency-driven; short backoff and retry
           log(`Backed off due to 429 (user ${userId} idx ${idx})`, 'warn');
-          // clear tokens and wait 30s
-          if (typeof limiter.drain === 'function') limiter.drain();
-          await new Promise((r) => setTimeout(r, 1000));
+          await new Promise((r) => setTimeout(r, 2500));
+          continue;
         }
         if (attempt < attempts) {
           const backoff = 1000 * Math.pow(2, attempt - 1);
@@ -107,6 +140,16 @@ const RecentTopPlays = async (userIds) => {
 
   let completed = 0; // track how many requests have finished
   const requests = userIds.map((userId, i) => (async () => {
+    // acquire semaphore slot
+    try {
+      await acquire();
+    } catch (e) {
+      // interrupted while waiting
+      completed += 1;
+      log(`skipped ${userId} (index ${i+1}) due to interrupt`, 'warn');
+      return [];
+    }
+
     try {
       const recentPlays = await fetchWithRetry(userId, i+1);
       let playsArray = [];
@@ -141,10 +184,32 @@ const RecentTopPlays = async (userIds) => {
       log(`Error fetching plays for user ${userId} (index ${i+1}): ${err}`, 'error');
       log(`completed ${completed}/${userIds.length} (index ${i+1}, user ${userId})`);
       return [];
+    } finally {
+      release();
     }
   })());
 
-  const recentTopPlays = await Promise.all(requests);
+  // race: either finish all or get interrupted
+  let recentTopPlays;
+  try {
+    await Promise.race([
+      Promise.all(requests),
+      interruptPromise
+    ]);
+    recentTopPlays = await Promise.all(requests);
+  } catch (err) {
+    if (err.message === 'INTERRUPTED') {
+      // collect whatever settled so far
+      recentTopPlays = await Promise.allSettled(requests)
+        .then(results => results.map(r => r.status === 'fulfilled' ? r.value : []));
+    } else {
+      throw err;
+    }
+  }
+  
+  // cleanup signal handler
+  process.off('SIGINT', handleInterrupt);
+  
   return recentTopPlays;
 }
 
